@@ -1,0 +1,10 @@
+2015-02-27  Stanislav Sinyagin  <ssinyagin@users.sourceforge.net>
+
+	* share/sql/spsid_schema.ansi.sql:
+	alter table SPSID_OBJECT_LOG add column
+	APPLICATION VARCHAR(32) NOT NULL DEFAULT 'SPSID'
+	after LOG_TS;
+	alter table SPSID_OBJECT_LOG modify column
+	USER_ID VARCHAR(256) NOT NULL;
+
+
