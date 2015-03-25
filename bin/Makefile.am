@@ -19,14 +19,18 @@
 SUBST = @abs_top_builddir@/setup_tools/substvars.sh
 
 bin_SCRIPTS = \
-	rring
+	rring \
+	rring_run_test
 
 CLEANFILES = $(bin_SCRIPTS)
 
 EXTRA_DIST = \
-	rring.in
+	rring.in \
+	rring_run_test.in
 
 
 rring: rring.in
 	$(SUBST) rring.in > rring
 
+rring_run_test: rring_run_test.in
+	$(SUBST) rring_run_test.in > rring_run_test

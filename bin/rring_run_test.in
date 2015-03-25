@@ -1,0 +1,63 @@
+#!@PERL@
+
+use strict;
+use warnings;
+
+BEGIN {
+    unshift(@INC, split(/,/, @perllibdirs@));
+}
+
+use Rring::Tester;
+use Log::Any::Adapter;
+Log::Any::Adapter->set('Stderr');
+
+
+
+$| = 1;
+
+sub print_usage
+{
+    print STDERR ("Usage: $0 PROF.yaml TESTFILE\n");
+    exit(1);
+};
+    
+
+my $profile = $ARGV[0] or print_usage();
+my $testfile = $ARGV[1] or print_usage();
+
+if( not -f $profile )
+{
+    die("Profile $profile is not readable");
+}
+
+if( not -f $testfile )
+{
+    die("Test file $testfile is not readable");
+}
+
+$Rring::tcpdump = '@TCPDUMP@';
+
+$Rring::t = Rring::Tester->new('profile' => $profile);
+die('Cannot initialize the tester') unless defined($Rring::t);
+
+
+do($testfile);
+if( $@ )
+{
+    die($@);
+}
+
+exit(0);
+
+
+
+
+# Local Variables:
+# mode: cperl
+# indent-tabs-mode: nil
+# cperl-indent-level: 4
+# cperl-continued-statement-offset: 4
+# cperl-continued-brace-offset: -4
+# cperl-brace-offset: 0
+# cperl-label-offset: -2
+# End:

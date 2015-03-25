@@ -58,10 +58,12 @@ sub dial
     my $self = shift;
     my $arg = shift;
 
+    my $t = $self->tester;
+    
     my $ret = {};
     
     my $esl = $self->esl;
-    my $cfg = $self->tester->cfg;
+    my $cfg = $t->cfg;
 
     my $bridge_string = $cfg->{'bridge_string'};
     my $substmacro = '${destination_number}';
@@ -134,6 +136,9 @@ sub dial
         $originate_string .= ' &park()';
     }
 
+    $t->trace->start($uuid);
+    $ret->{'trace_file'} = $t->trace->trace_file();
+        
     $ret->{'originate_string'} = $originate_string;
     $log->debug('Originating call: ' . $originate_string);
     $esl->bgapi($originate_string);
@@ -157,7 +162,9 @@ sub dial
             $log->debugf('Call stopped');
         }
     }
-            
+
+    $t->trace->stop();
+
     return $ret;
 }
 

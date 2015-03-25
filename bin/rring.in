@@ -41,20 +41,12 @@ if( not $opts_ok or scalar(@testfiles) == 0 or
 }
 
 
-foreach my $tf (@testfiles)
-{
-    if( not -r $tf )
-    {
-        die(sprintf
-            ('Cannot read test file %s: no such file or directory', $tf));
-    }
-}
 
 
 my $harness = TAP::Harness->new
     ({verbosity => 1,
       lib     => [ split(/,/, @perllibdirs@) ],
-      test_args => [ $profile ]});
+      exec => ['@bindir@/rring_run_test', $profile]});
 
 my $aggregator = $harness->runtests(@testfiles);
 

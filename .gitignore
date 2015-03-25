@@ -11,3 +11,4 @@ configure.lineno
 *.tar.gz
 setup_tools/substvars.sh
 bin/rring
+bin/rring_run_test
