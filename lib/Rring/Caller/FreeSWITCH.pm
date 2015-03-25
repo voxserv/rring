@@ -151,6 +151,7 @@ sub dial
                             $arg->{'hangup_after'}, $uuid));
     }
 
+    my $callid = '';
     my $go_on = 1;
     while($go_on)
     {
@@ -161,10 +162,19 @@ sub dial
             $go_on = 0;
             $log->debugf('Call stopped');
         }
+        else
+        {
+            if( $callid eq '' )
+            {
+                $callid = $esl->api('uuid_getvar ' . $uuid .
+                                    ' sip_call_id')->getBody();
+            }
+        }
     }
 
     $t->trace->stop();
-
+    $t->trace->call_id($callid);
+    
     return $ret;
 }
 
