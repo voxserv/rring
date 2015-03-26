@@ -4,6 +4,7 @@ package Rring::Caller::FreeSWITCH;
 use Moose;
 use ESL;
 use Log::Any;
+use Time::HiRes qw(usleep);
 
 has 'tester' =>
     (
@@ -155,7 +156,7 @@ sub dial
     my $go_on = 1;
     while($go_on)
     {
-        sleep(1);
+        usleep(250);
         my $val = $esl->api('uuid_exists ' . $uuid)->getBody();
         if( $val ne 'true' )
         {
@@ -164,16 +165,22 @@ sub dial
         }
         else
         {
-            if( $callid eq '' )
+            if( $callid eq '' or $callid eq '_undef_' )
             {
                 $callid = $esl->api('uuid_getvar ' . $uuid .
                                     ' sip_call_id')->getBody();
-                $log->debug('SIP Call id: ' . $callid);
             }
         }
     }
 
     $t->trace->stop();
+    
+    if( $callid eq '' or $callid eq '_undef_' )
+    {
+        die('The call has not properly started');
+    }
+    
+    $log->debug('SIP Call id: ' . $callid);
     $t->trace->out_call_id($callid);
     $t->trace->analyze_outbound_call();
 

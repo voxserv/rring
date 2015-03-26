@@ -104,6 +104,10 @@ sub start
     {
         push(@cmd, '-i', $cfg->{'pcap_iface'});
     }
+    else
+    {
+        push(@cmd, '-i', 'any');
+    }
 
     my $filter = $cfg->{'pcap_filter'};
     $filter = 'udp port 5060' unless defined($filter);
