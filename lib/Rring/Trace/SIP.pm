@@ -198,14 +198,18 @@ sub analyze_outbound_call
     
     # analyze the call flow
     my $i = 0;
-    my $pkt = $sip_packets->[$i];
+    my $invite_cseq;
     
-    if( not $pkt->is_request or $pkt->method ne 'INVITE')
+    # analyze the first INVITE
     {
-        die('First packet in the call is not INVITE');
-    }
+        my $pkt = $sip_packets->[$i];        
+        if( not $pkt->is_request or $pkt->method ne 'INVITE')
+        {
+            die('First packet in the call is not INVITE');
+        }
 
-    {
+        $invite_cseq = $pkt->cseq;
+        
         my $sdp = eval { $pkt->sdp_body };
         if( defined($sdp) )
         {
@@ -214,7 +218,7 @@ sub analyze_outbound_call
         }
     }
 
-    my $invite_cseq = $pkt->cseq;
+    
     my ($invite_cseq_num, $dummy) = split(/\s+/, $invite_cseq);
     
     my $invite_got_final_response = 0;
@@ -225,7 +229,7 @@ sub analyze_outbound_call
     while( not $invite_got_final_response and
            ++$i < scalar(@{$sip_packets}) )
     {
-        $pkt = $sip_packets->[$i];
+        my $pkt = $sip_packets->[$i];
 
         if( $pkt->is_request and $pkt->method eq 'INVITE' )
         {
@@ -339,6 +343,8 @@ sub analyze_outbound_call
     while( $call_connected and 
            ++$i < scalar(@{$sip_packets}) )
     {
+        my $pkt = $sip_packets->[$i];
+        
         if( $pkt->is_request )
         {
             if( $pkt->method eq 'BYE' )
