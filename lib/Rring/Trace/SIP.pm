@@ -5,6 +5,8 @@ use Moose;
 use Net::Frame::Dump::Offline;
 use Net::Frame::Simple;
 use Net::SIP::Packet;
+use Net::SIP::Request;
+use Net::SIP::Response;
 
 has 'tester' =>
     (
@@ -21,7 +23,7 @@ has 'session_id' =>
      init_arg => undef,
     );
 
-has 'call_id' =>
+has 'out_call_id' =>
     (
      is  => 'rw',
      isa => 'Str',
@@ -42,6 +44,37 @@ has 'tcpdump_pid' =>
      isa => 'Int',
      init_arg => undef,
     );
+
+has 'out_sip_packets' =>
+    (
+     is  => 'rw',
+     isa => 'ArrayRef',
+     init_arg => undef,
+    );
+
+has 'out_packet_timestamps' =>
+    (
+     is  => 'rw',
+     isa => 'ArrayRef',
+     init_arg => undef,
+    );
+
+has 'out_call_props' =>
+    (
+     is  => 'rw',
+     isa => 'HashRef',
+     init_arg => undef,
+     default => sub { {} },
+    );
+
+has 'out_call_errors' =>
+    (
+     is  => 'rw',
+     isa => 'ArrayRef',
+     init_arg => undef,
+     default => sub { [] },
+    );
+
 
 our $log = Log::Any->get_logger;
 
@@ -87,9 +120,10 @@ sub start
         exec(@cmd);
     }
 
+    sleep(5);
     $log->debug('Started capture: ' . join(' ', @cmd));
     $self->tcpdump_pid($pid);
-    
+
     return;
 }
 
@@ -97,7 +131,8 @@ sub start
 sub stop
 {
     my $self = shift;
-
+    
+    sleep(5);
     my $pid = $self->tcpdump_pid;
     kill('TERM', $pid);
     waitpid($pid, 0);
@@ -107,17 +142,19 @@ sub stop
 }
 
 
-sub analyze
+sub analyze_outbound_call
 {
     my $self = shift;
 
-    if( $self->call_id eq '' )
+    my $callid = $self->out_call_id;
+    if( $callid eq '' )
     {
-        die("call_id is empty, cannot analyze");
+        die("out_call_id is empty, cannot analyze");
     }
 
+    my $sip_packets = [];
+    my $timestamps = [];
     my $oDump = Net::Frame::Dump::Offline->new('file' => $self->trace_file);
-
     $oDump->start;
 
     while( my $h = $oDump->next )
@@ -129,14 +166,189 @@ sub analyze
              timestamp  => $h->{timestamp},
             );
 
-        my $pkt = eval { Net::SIP::Packet->new($f->ref->{'UDP'}->payload) }
-            or die "invalid SIP packet";
-
-        
+        my $payload = $f->ref->{'UDP'}->payload;
+        # $log->debug($payload);
+        my $pkt = eval { Net::SIP::Packet->new($payload) };
+        if( defined($pkt) )
+        {
+            if( $pkt->callid eq $callid )
+            {
+                push(@{$sip_packets}, $pkt);
+                push(@{$timestamps}, $h->{timestamp});
+            }
+        }
+        else
+        {
+            $log->warn("Capture caught a non-SIP packet");
+        }
     }
-
+    
     $oDump->stop;
 
+    if( scalar(@{$sip_packets}) == 0 )
+    {
+        die('Capture does not have SIP packets for Call-ID ' . $callid);
+    }
+    
+    $self->out_sip_packets($sip_packets);
+    $self->out_packet_timestamps($timestamps);
+
+    my $props = $self->out_call_props;
+    my $errors = $self->out_call_errors;
+    
+    # analyze the call flow
+    my $i = 0;
+    my $pkt = $sip_packets->[$i];
+    
+    if( not $pkt->is_request or $pkt->method ne 'INVITE')
+    {
+        die('First packet in the call is not INVITE');
+    }
+
+    {
+        my $sdp = eval { $pkt->sdp_body };
+        if( defined($sdp) )
+        {
+            $props->{'first_invite_has_sdp'} = 1;
+            $props->{'invite_has_sdp'} = 1;
+        }
+    }
+
+    my $invite_cseq = $pkt->cseq;
+    my ($invite_cseq_num, $dummy) = split(/\s+/, $invite_cseq);
+    
+    my $invite_got_final_response = 0;
+    my $call_connected = 0;
+    my $auth_requested = 0;
+    my $auth_sent = 0;
+    
+    while( not $invite_got_final_response and
+           ++$i < scalar(@{$sip_packets}) )
+    {
+        $pkt = $sip_packets->[$i];
+
+        if( $pkt->is_request and $pkt->method eq 'INVITE' )
+        {
+            $invite_cseq = $pkt->cseq;
+            my ($new_invite_cseq_num, $dummy) = split(/\s+/, $invite_cseq);
+            if( $new_invite_cseq_num == $invite_cseq_num )
+            {
+                push(@{$errors}, 'INVITE ' . $invite_cseq_num .
+                     ' was retransmitted');
+                $props->{'invite_timeout'} = 1;
+            }
+            else
+            {
+                $invite_cseq_num = $new_invite_cseq_num;
+                if( $auth_requested )
+                {
+                    if( scalar($pkt->get_header('Authorization')) or
+                        scalar($pkt->get_header('Proxy-Authorization')) )
+                    {
+                        $auth_sent = 1;
+                    }
+                }
+            }
+
+            my $sdp = eval { $pkt->sdp_body };
+            if( defined($sdp) )
+            {
+                $props->{'invite_has_sdp'} = 1;
+            }
+            next;
+        }
+
+        if( $pkt->is_request and $pkt->method eq 'CANCEL' )
+        {
+            $props->{'call_canceled'} = 1;
+            last;
+        }
+
+        if( $pkt->is_request and $pkt->method eq 'ACK' )
+        {
+            next;
+        }
+        
+        if( not $pkt->is_response or $pkt->cseq ne $invite_cseq )
+        {
+            push(@{$errors}, 'INVITE was not replied');
+            last;
+        }
+
+        my $code = int($pkt->code);
+        
+        if( $code == 401 or $code == 407 )
+        {
+            if( scalar($pkt->get_header('WWW-Authenticate')) or
+                scalar($pkt->get_header('Proxy-Authenticate')) )
+            {
+                $auth_requested = 1;
+                $props->{'auth_requested'} = 1;
+            }
+            next;
+        }
+        
+        if( $code >= 100 and $code <= 199 )
+        {
+            # session progress
+            $props->{'progress_' . $code} = 1;
+            if( not $auth_requested )
+            {
+                $props->{'unauth_progress_' . $code} = 1;
+            }
+            else
+            {
+                $props->{'auth_progress_' . $code} = 1;
+            }
+
+            if( $code == 183 )
+            {
+                my $sdp = eval { $pkt->sdp_body };
+                if( defined($sdp) )
+                {
+                    $props->{'183_has_sdp'} = 1;
+                }
+            }
+            next;
+        }
+        
+        if( $code == 200 )
+        {
+            my $sdp = eval { $pkt->sdp_body };
+            if( defined($sdp) )
+            {
+                $props->{'200_has_sdp'} = 1;
+            }
+
+            $invite_got_final_response = 1;
+            $props->{'call_connected'} = 1;
+            $call_connected = 1;
+            next;
+        }
+
+        if( $code > 200 )
+        {
+            $invite_got_final_response = 1;
+            $props->{'call_failed'} = 1;
+            $props->{'failure_code'} = $code;
+            $props->{'failure_msg'} = $pkt->msg;
+        }
+    }
+
+    # process the rest of the call 
+    while( $call_connected and 
+           ++$i < scalar(@{$sip_packets}) )
+    {
+        if( $pkt->is_request )
+        {
+            if( $pkt->method eq 'BYE' )
+            {
+                $call_connected = 0;
+                $props->{'call_ended_normally'} = 1;
+            }
+        }
+    }
+    
     return;
 }
 

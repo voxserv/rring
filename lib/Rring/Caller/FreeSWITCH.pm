@@ -168,13 +168,15 @@ sub dial
             {
                 $callid = $esl->api('uuid_getvar ' . $uuid .
                                     ' sip_call_id')->getBody();
+                $log->debug('SIP Call id: ' . $callid);
             }
         }
     }
 
     $t->trace->stop();
-    $t->trace->call_id($callid);
-    
+    $t->trace->out_call_id($callid);
+    $t->trace->analyze_outbound_call();
+
     return $ret;
 }
 
