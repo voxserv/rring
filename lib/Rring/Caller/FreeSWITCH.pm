@@ -96,7 +96,7 @@ sub dial
         my $cid = $arg->{'callerid'};
         $originate_string .=
             sprintf(',origination_caller_id_number=%s,' .
-                    'origination_caller_id_name=$s',
+                    'origination_caller_id_name=%s',
                     $cid, $cid);
     }
     else
