@@ -104,6 +104,8 @@ sub dial
         $log->warn('callerid is not defined');
     }
 
+    $originate_string .= ',jitterbuffer=60:200:20';
+    
     if( defined($cfg->{'setvars'}) )
     {
         foreach my $pair (@{$cfg->{'setvars'}})
@@ -113,6 +115,14 @@ sub dial
         }
     }
 
+    if( defined($arg->{'codec'}) )
+    {
+        my $str = $arg->{'codec'};
+        $str =~ s/,/\\,/g;
+        $originate_string .=
+            sprintf(',absolute_codec_string=%s', $str);
+    }
+    
     if( $arg->{'record_audio'} )
     {
         my $dir = $cfg->{'record_dir'};
@@ -128,9 +138,22 @@ sub dial
         
     $originate_string .= '}' . $bridge_string;
 
-    if( $arg->{'play_moh'} )
+    if( defined($arg->{'play'}) )
     {
-        $originate_string .= ' &playback(local_stream://moh)';
+        my $src = $arg->{'play'};
+        
+        if( $src eq 'moh' )
+        {
+            $originate_string .= ' &playback(local_stream://moh)';
+        }
+        elsif( -f $src )
+        {
+            $originate_string .= ' &playback(' . $src . ')';
+        }
+        else
+        {
+            die('Cannot find playback file: ' . $src);
+        }
     }
     else
     {
