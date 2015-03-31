@@ -122,7 +122,34 @@ sub dial
         $originate_string .=
             sprintf(',absolute_codec_string=%s', $str);
     }
-    
+
+    if( defined($arg->{'send_dtmf'}) )
+    {
+        if( ref($arg->{'send_dtmf'}) ne 'ARRAY' )
+        {
+            die('send_dtmf should be an array');
+        }        
+        
+        my $type = $arg->{'dtmf_type'};
+        if( not defined($type) )
+        {
+            $log->debug('Setting DTMF type to rfc2833');
+            $type = 'rfc2833';
+        }
+        elsif( $type eq 'rfc2833' or $type eq 'info' )
+        {
+            $log->debug('Setting DTMF type to ' . $type);
+        }
+        else
+        {
+            $log->error('Invalid DTMF type: ' . $type . '. Setting to rfc2833');
+            $type = 'rfc2833';
+        }
+        
+        $originate_string .= sprintf(',dtmf_type=%s', $type);
+    }
+            
+                
     if( $arg->{'record_audio'} )
     {
         my $dir = $cfg->{'record_dir'};
@@ -165,7 +192,7 @@ sub dial
         
     $ret->{'originate_string'} = $originate_string;
     $log->debug('Originating call: ' . $originate_string);
-    $esl->bgapi($originate_string);
+    $esl->api($originate_string);
 
     if( $arg->{'hangup_after'} )
     {
@@ -173,6 +200,17 @@ sub dial
                      $arg->{'hangup_after'});
         $esl->bgapi(sprintf('sched_hangup +%d %s',
                             $arg->{'hangup_after'}, $uuid));
+    }
+
+    if( defined($arg->{'send_dtmf'}) )
+    {
+        my ($delay, $str) = @{$arg->{'send_dtmf'}};
+        $log->debugf('Scheduling DTMF string after ' .
+                     $delay . ' seconds: ' . $str);
+        $esl->bgapi
+            (sprintf
+             ('sched_api +%d none uuid_send_dtmf %s %s',
+              $delay, $uuid, $str));
     }
 
     my $callid = '';
