@@ -57,7 +57,8 @@ AC_SUBST(perllibdirs, [${perllibdirs}])
 
 # Check the necessary Perl modules
 
-for module in 'ESL' 'TAP::Harness' 'YAML' 'Log::Any' 'Moose'
+for module in 'ESL' 'TAP::Harness' 'YAML' 'Log::Any' 'Log::Any::Adapter' \
+    'Moose' 'Net::SIP' 'Net::Frame::Simple' 'Net::Frame::Dump::Offline'
 do
      AC_MSG_CHECKING([presence of $module])
      if ${PERL} ${PERLOPTS} -e 'use '$module 2>/dev/null; then
