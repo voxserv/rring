@@ -235,15 +235,25 @@ sub dial
     }
 
     $t->trace->stop();
-    
-    if( $callid eq '' or $callid eq '_undef_' )
+
+    if( defined($arg->{'invite_hdr_name'}) and
+        defined($arg->{'invite_hdr_value'}) )
     {
-        die('The call has not properly started');
+        $t->trace->invite_hdr_name($arg->{'invite_hdr_name'});
+        $t->trace->invite_hdr_value($arg->{'invite_hdr_value'});
     }
-    
-    $log->debug('SIP Call id: ' . $callid);
-    $t->trace->out_call_id($callid);
-    $t->trace->analyze_outbound_call();
+    else
+    {        
+        if( $callid eq '' or $callid eq '_undef_' )
+        {
+            die('The call has not properly started');
+        }
+        
+        $log->debug('SIP Call id: ' . $callid);
+        $t->trace->call_id($callid);
+    }
+
+    $t->trace->analyze_call();
 
     return $ret;
 }

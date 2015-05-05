@@ -23,12 +23,27 @@ has 'session_id' =>
      init_arg => undef,
     );
 
-has 'out_call_id' =>
+has 'call_id' =>
     (
      is  => 'rw',
      isa => 'Str',
      default => '',
     );
+
+has 'invite_hdr_name' =>
+    (
+     is  => 'rw',
+     isa => 'Str',
+     default => '',
+    );
+
+has 'invite_hdr_value' =>
+    (
+     is  => 'rw',
+     isa => 'Str',
+     default => '',
+    );
+
 
 has 'trace_file' =>
     (
@@ -45,21 +60,44 @@ has 'tcpdump_pid' =>
      init_arg => undef,
     );
 
-has 'out_sip_packets' =>
+has 'sip_packets' =>
     (
      is  => 'rw',
      isa => 'ArrayRef',
      init_arg => undef,
     );
 
-has 'out_packet_timestamps' =>
+has 'packet_timestamps' =>
     (
      is  => 'rw',
      isa => 'ArrayRef',
      init_arg => undef,
     );
 
-has 'out_call_props' =>
+has 'packet_from_caller' =>
+    (
+     is  => 'rw',
+     isa => 'ArrayRef',
+     init_arg => undef,
+    );
+
+
+has 'caller_ipaddr' =>
+    (
+     is  => 'rw',
+     isa => 'Str',
+     init_arg => undef,
+    );
+
+has 'caller_udpport' =>
+    (
+     is  => 'rw',
+     isa => 'Int',
+     init_arg => undef,
+    );
+
+
+has 'call_props' =>
     (
      is  => 'rw',
      isa => 'HashRef',
@@ -67,7 +105,7 @@ has 'out_call_props' =>
      default => sub { {} },
     );
 
-has 'out_call_errors' =>
+has 'call_errors' =>
     (
      is  => 'rw',
      isa => 'ArrayRef',
@@ -99,7 +137,7 @@ sub start
     $self->trace_file($pcap);
 
 
-    my @cmd = ($Rring::tcpdump, '-q', '-s', '0', '-w', $pcap);
+    my @cmd = ($Rring::tcpdump, '-q', '-B', '4096', '-w', $pcap);
     if( defined($cfg->{'pcap_iface'}) )
     {
         push(@cmd, '-i', $cfg->{'pcap_iface'});
@@ -146,18 +184,30 @@ sub stop
 }
 
 
-sub analyze_outbound_call
+sub _read_trace_file
 {
     my $self = shift;
 
-    my $callid = $self->out_call_id;
+    my $callid = $self->call_id;
+    my $invite_hdr_name = $self->invite_hdr_name;
+    my $invite_hdr_value = $self->invite_hdr_value;
+
     if( $callid eq '' )
     {
-        die("out_call_id is empty, cannot analyze");
-    }
-
+        if( $invite_hdr_name eq '' )
+        {
+            die('invite_hdr_name cannot be empty when call_id is empty');
+        }
+        if( $invite_hdr_value eq '' )
+        {
+            die('invite_hdr_value cannot be empty when call_id is empty');
+        }
+    }    
+        
     my $sip_packets = [];
     my $timestamps = [];
+    my $packet_from_caller = [];
+    
     my $oDump = Net::Frame::Dump::Offline->new('file' => $self->trace_file);
     $oDump->start;
 
@@ -175,10 +225,65 @@ sub analyze_outbound_call
         my $pkt = eval { Net::SIP::Packet->new($payload) };
         if( defined($pkt) )
         {
-            if( $pkt->callid eq $callid )
+            my $srcaddr;
+            if( defined($f->ref->{'IPv4'}) )
+            {
+                $srcaddr = $f->ref->{'IPv4'}->src;
+            }
+            elsif( defined($f->ref->{'IPv6'}) )
+            {
+                $srcaddr = $f->ref->{'IPv6'}->src;
+            }
+            else
+            {
+                die('Cannot determine sender IPv4/IPv6 address');
+            }
+            
+            my $srcport = $f->ref->{'UDP'}->src;
+            
+            my $take = 0;
+            if( $pkt->is_request and $pkt->method eq 'INVITE' )
+            {
+                if( $callid eq '' )
+                {
+                    if( $pkt->get_header($invite_hdr_name) =~
+                        $invite_hdr_value )
+                    {
+                        $callid = $pkt->callid;
+                        $self->call_id($callid);
+                        $take = 1;
+                    }
+                }
+                elsif( $pkt->callid eq $callid )
+                {
+                    $take = 1;
+                }
+
+                if( $take )
+                {
+                    $self->caller_ipaddr($srcaddr);
+                    $self->caller_udpport($srcport);
+                }                        
+            }
+            else
+            {
+                if( $callid ne '' and $pkt->callid eq $callid )
+                {
+                    $take = 1;
+                }
+            }
+            
+            if( $take )
             {
                 push(@{$sip_packets}, $pkt);
                 push(@{$timestamps}, $h->{timestamp});
+                my $from_caller = 0;
+                if( $self->caller_ipaddr eq $srcaddr and
+                    $self->caller_udpport == $srcport )
+                {
+                    $from_caller = 1;
+                }
+                push(@{$packet_from_caller}, $from_caller);
             }
         }
         else
@@ -188,17 +293,24 @@ sub analyze_outbound_call
     }
     
     $oDump->stop;
-
-    if( scalar(@{$sip_packets}) == 0 )
-    {
-        die('Capture does not have SIP packets for Call-ID ' . $callid);
-    }
+    $self->sip_packets($sip_packets);
+    $self->packet_timestamps($timestamps);
+    $self->packet_from_caller($packet_from_caller);
     
-    $self->out_sip_packets($sip_packets);
-    $self->out_packet_timestamps($timestamps);
+    return;
+}
 
-    my $props = $self->out_call_props;
-    my $errors = $self->out_call_errors;
+    
+sub analyze_call
+{
+    my $self = shift;
+
+    $self->_read_trace_file();
+    
+    my $sip_packets = $self->sip_packets;
+    
+    my $props = $self->call_props;
+    my $errors = $self->call_errors;
     
     # analyze the call flow
     my $i = 0;
@@ -213,11 +325,18 @@ sub analyze_outbound_call
         }
 
         $invite_cseq = $pkt->cseq;
+
+        $props->{'invite_uri'} = $pkt->uri;
+        $props->{'invite_from'} = $pkt->get_header('From');
+        $props->{'invite_to'} = $pkt->get_header('To');
+        my $pai = $pkt->get_header('P-Asserted-Identity');
+        $props->{'invite_pai'} = $pai if defined($pai);
+        my $privacy = $pkt->get_header('Privacy');
+        $props->{'invite_privacy'} = $privacy if defined($privacy);
         
         my $sdp = eval { $pkt->sdp_body };
         if( defined($sdp) )
         {
-            $props->{'first_invite_has_sdp'} = 1;
             $props->{'invite_has_sdp'} = 1;
         }
     }
@@ -257,12 +376,7 @@ sub analyze_outbound_call
                     }
                 }
             }
-
-            my $sdp = eval { $pkt->sdp_body };
-            if( defined($sdp) )
-            {
-                $props->{'invite_has_sdp'} = 1;
-            }
+                
             next;
         }
 
@@ -355,6 +469,8 @@ sub analyze_outbound_call
             {
                 $call_connected = 0;
                 $props->{'call_ended_normally'} = 1;
+                $props->{'call_ended_by_caller'} =
+                    $self->packet_from_caller->[$i];
             }
         }
     }
