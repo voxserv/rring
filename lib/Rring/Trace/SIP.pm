@@ -97,22 +97,6 @@ has 'caller_udpport' =>
     );
 
 
-has 'call_props' =>
-    (
-     is  => 'rw',
-     isa => 'HashRef',
-     init_arg => undef,
-     default => sub { {} },
-    );
-
-has 'call_errors' =>
-    (
-     is  => 'rw',
-     isa => 'ArrayRef',
-     init_arg => undef,
-     default => sub { [] },
-    );
-
 
 our $log = Log::Any->get_logger;
 
@@ -309,8 +293,8 @@ sub analyze_call
     
     my $sip_packets = $self->sip_packets;
     
-    my $props = $self->call_props;
-    my $errors = $self->call_errors;
+    my $props = {};
+    my $errors = [];
     
     # analyze the call flow
     my $i = 0;
@@ -475,7 +459,7 @@ sub analyze_call
         }
     }
     
-    return;
+    return ($props, $errors);
 }
 
     

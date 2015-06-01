@@ -53,6 +53,15 @@ sub BUILD
     return;
 }
 
+sub DESTROY
+{
+    my $self = shift;
+    
+    if($self->esl->connected())
+    {
+        $self->esl->disconnect();
+    }
+}
 
 sub dial
 {
@@ -69,7 +78,7 @@ sub dial
     my $bridge_string = $cfg->{'bridge_string'};
     my $substmacro = '${destination_number}';
     my $idx = index($bridge_string, $substmacro);
-    my $dest = $arg->{'dest'};
+    my $dest = $arg->{'outbound_dest'};
     
     if( $idx >= 0 )
     {
@@ -82,18 +91,19 @@ sub dial
         substr($bridge_string, $idx, length($substmacro), $dest);
     }
 
-    my $uuid = $esl->api('create_uuid')->getBody();
-    $log->debug('Created UUID: ' . $uuid);
-    $ret->{'uuid'} = $uuid;
+    my $outbound_uuid = $esl->api('create_uuid')->getBody();
+    $log->debug('Created UUID: ' . $outbound_uuid);
+    $ret->{'uuid'} = $outbound_uuid;
     
     my $originate_string =
-        'originate {ignore_early_media=true,origination_uuid=' . $uuid;
+        'originate {ignore_early_media=true,origination_uuid=' .
+            $outbound_uuid;
     
     $originate_string .= ',originate_timeout=60';
 
-    if( defined($arg->{'callerid'}))
+    if( defined($arg->{'outbound_callerid'}))
     {
-        my $cid = $arg->{'callerid'};
+        my $cid = $arg->{'outbound_callerid'};
         $originate_string .=
             sprintf(',origination_caller_id_number=%s,' .
                     'origination_caller_id_name=%s',
@@ -101,10 +111,10 @@ sub dial
     }
     else
     {
-        $log->warn('callerid is not defined');
+        $log->warn('outbound_callerid is not defined');
     }
 
-    $originate_string .= ',jitterbuffer=60:200:20';
+    $originate_string .= ',jitterbuffer_msec=60:200';
     
     if( defined($cfg->{'setvars'}) )
     {
@@ -115,22 +125,22 @@ sub dial
         }
     }
 
-    if( defined($arg->{'codec'}) )
+    if( defined($arg->{'outbound_codec'}) )
     {
-        my $str = $arg->{'codec'};
+        my $str = $arg->{'outbound_codec'};
         $str =~ s/,/\\,/g;
         $originate_string .=
             sprintf(',absolute_codec_string=%s', $str);
     }
 
-    if( defined($arg->{'send_dtmf'}) )
+    if( defined($arg->{'outbound_send_dtmf'}) )
     {
-        if( ref($arg->{'send_dtmf'}) ne 'ARRAY' )
+        if( ref($arg->{'outbound_send_dtmf'}) ne 'ARRAY' )
         {
-            die('send_dtmf should be an array');
+            die('outbound_send_dtmf should be an array');
         }        
         
-        my $type = $arg->{'dtmf_type'};
+        my $type = $arg->{'outbound_send_dtmf_type'};
         if( not defined($type) )
         {
             $log->debug('Setting DTMF type to rfc2833');
@@ -150,12 +160,12 @@ sub dial
     }
             
                 
-    if( $arg->{'record_audio'} )
+    if( $arg->{'outbound_record_audio'} )
     {
         my $dir = $cfg->{'record_dir'};
         $dir = '/var/tmp' unless defined($dir);
 
-        my $wav = $dir . '/' . $uuid . '.wav';
+        my $wav = $dir . '/' . $outbound_uuid . '.wav';
         $ret->{'record'} = $wav;
 
         $originate_string .=
@@ -165,9 +175,9 @@ sub dial
         
     $originate_string .= '}' . $bridge_string;
 
-    if( defined($arg->{'play'}) )
+    if( defined($arg->{'outbound_play'}) )
     {
-        my $src = $arg->{'play'};
+        my $src = $arg->{'outbound_play'};
         
         if( $src eq 'moh' )
         {
@@ -187,73 +197,206 @@ sub dial
         $originate_string .= ' &park()';
     }
 
-    $t->trace->start($uuid);
+    $t->trace->start($outbound_uuid);
     $ret->{'trace_file'} = $t->trace->trace_file();
-        
+
+    $esl->events('plain', 'CHANNEL_CREATE');
+    $esl->events('plain', 'CHANNEL_ANSWER');
+    $esl->events('plain', 'CHANNEL_DESTROY');
+    $esl->events('plain', 'DTMF');
+
     $ret->{'originate_string'} = $originate_string;
     $log->debug('Originating call: ' . $originate_string);
     $esl->api($originate_string);
 
-    if( $arg->{'hangup_after'} )
+    if( $arg->{'outbound_hangup_after'} )
     {
         $log->debugf('Scheduling hangup after %d seconds',
-                     $arg->{'hangup_after'});
+                     $arg->{'outbound_hangup_after'});
         $esl->bgapi(sprintf('sched_hangup +%d %s',
-                            $arg->{'hangup_after'}, $uuid));
+                            $arg->{'outbound_hangup_after'}, $outbound_uuid));
     }
 
-    if( defined($arg->{'send_dtmf'}) )
+    if( defined($arg->{'outbound_send_dtmf'}) )
     {
-        my ($delay, $str) = @{$arg->{'send_dtmf'}};
+        my ($delay, $str) = @{$arg->{'outbound_send_dtmf'}};
         $log->debugf('Scheduling DTMF string after ' .
                      $delay . ' seconds: ' . $str);
         $esl->bgapi
             (sprintf
              ('sched_api +%d none uuid_send_dtmf %s %s',
-              $delay, $uuid, $str));
+              $delay, $outbound_uuid, $str));
     }
 
-    my $callid = '';
-    my $go_on = 1;
-    while($go_on)
+    my $outbound_callid = '';
+    my $outbound_originate_ts = 0;
+    my $outbound_answer_ts = 0;
+    my $outbound_duration = 0;
+    my $outbound_dtmf = [];
+    my $inbound_uuid = '';
+    my $inbound_callid = '';
+    my $inbound_dtmf = [];
+    my $inbound_invite_ts = 0;
+    my $inbound_answer_ts = 0;
+    my $inbound_duration = 0;
+    
+    my $outbound_ongoing = 1;
+    my $inbound_ongoing = 0;
+    
+    while($outbound_ongoing or $inbound_ongoing)
     {
-        usleep(250);
-        my $val = $esl->api('uuid_exists ' . $uuid)->getBody();
-        if( $val ne 'true' )
+        my $event = $esl->recvEventTimed(200);
+        if( defined($event) )
         {
-            $go_on = 0;
-            $log->debugf('Call stopped');
-        }
-        else
-        {
-            if( $callid eq '' or $callid eq '_undef_' )
+            my $type = $event->getType();
+            my $event_uuid = $event->getHeader('Unique-ID');
+            my $ts = $event->getHeader('Event-Date-Timestamp') / 1e6;
+            
+            if( $type eq 'CHANNEL_CREATE' )
             {
-                $callid = $esl->api('uuid_getvar ' . $uuid .
-                                    ' sip_call_id')->getBody();
+                if( defined($arg->{'inbound_match'}) and
+                    $inbound_uuid eq '' and
+                    $event->getHeader('Call-Direction') eq 'inbound' )
+                {
+                    my $match = 1;
+                    foreach my $hdr (keys %{$arg->{'inbound_match'}})
+                    {
+                        if( $event->getHeader($hdr) !~
+                            $arg->{'inbound_match'}{$hdr} )
+                        {
+                            $match = 0;
+                            last;
+                        }
+                    }
+
+                    if( $match )
+                    {
+                        $log->debugf('Matched an inbound call');
+                        $inbound_uuid = $event_uuid;
+                        $inbound_callid =
+                            $event->getHeader('variable_sip_call_id');
+                        $inbound_invite_ts = $ts;
+                        $inbound_ongoing = 1;
+                    }
+                }
+                elsif( $event_uuid eq $outbound_uuid )
+                {
+                    $outbound_originate_ts = $ts;
+                }
+            }
+            elsif( $type eq 'CHANNEL_ANSWER' )
+            {
+                if( $event_uuid eq $outbound_uuid )
+                {
+                    $log->debugf('Outbound call answered');
+                    $outbound_callid =
+                        $event->getHeader('variable_sip_call_id');
+                    $outbound_answer_ts = $ts;
+                }
+                elsif( $event_uuid eq $inbound_uuid )
+                {
+                    $inbound_answer_ts = $ts;
+                }
+            }
+            elsif( $type eq 'CHANNEL_DESTROY' )
+            {
+                if( $event_uuid eq $outbound_uuid )
+                {
+                    $outbound_ongoing = 0;
+                    $log->debugf('Outbound call stopped');
+                    $outbound_duration =
+                        $event->getHeader('variable_uduration') / 1e6;
+                }
+                elsif( $event_uuid eq $inbound_uuid )
+                {
+                    $inbound_ongoing = 0;
+                    $log->debugf('Inbound call stopped');
+                    $inbound_duration =
+                        $event->getHeader('variable_uduration') / 1e6;
+                }
+            }
+            elsif( $type eq 'DTMF' )
+            {
+                my $digit = {};
+                foreach my $hdr ('DTMF-Digit', 'DTMF-Duration', 'DTMF-Source')
+                {
+                    $digit->{$hdr} = $event->getHeader($hdr);
+                }
+                
+                $digit->{'ts'} = $ts;
+
+                if( $event_uuid eq $inbound_uuid )
+                {
+                    push(@{$inbound_dtmf}, $digit);
+                    $log->debugf('DTMF in inbound call: ' .
+                                 $digit->{'DTMF-Digit'});
+                }
+                elsif( $event_uuid eq $outbound_uuid )
+                {
+                    push(@{$outbound_dtmf}, $digit);
+                    $log->debugf('DTMF in outbound call: ' .
+                                 $digit->{'DTMF-Digit'});
+                }
             }
         }
     }
 
     $t->trace->stop();
 
-    if( defined($arg->{'invite_hdr_name'}) and
-        defined($arg->{'invite_hdr_value'}) )
+    # by default, analyze outbound call only
+    my $analyze_outbound = 1;
+    my $analyze_inbound = 0;
     {
-        $t->trace->invite_hdr_name($arg->{'invite_hdr_name'});
-        $t->trace->invite_hdr_value($arg->{'invite_hdr_value'});
-    }
-    else
-    {        
-        if( $callid eq '' or $callid eq '_undef_' )
+        my $val = $arg->{'analyze_sip'};
+        if( defined($val) )
         {
-            die('The call has not properly started');
+            if( $val eq 'inbound' )
+            {
+                $analyze_outbound = 0;
+                $analyze_inbound = 1;
+            }
+            elsif( $val eq 'both' )
+            {
+                $analyze_inbound = 1;
+            }
+            elsif( $val eq 'outbound' )
+            {
+                die('Unknown value of analyze_sip: ' . $val);
+            }
         }
-        
-        $log->debug('SIP Call id: ' . $callid);
-        $t->trace->call_id($callid);
+    }
+                
+    if( $analyze_outbound )
+    {
+        $t->trace->call_id($outbound_callid);
+        my ($props, $errors) = $t->trace->analyze_call();
+
+        $ret->{'outbound_callid'} = $outbound_callid;
+        $ret->{'outbound_call_props'} = $props;
+        $ret->{'outbound_call_errors'} = $errors;
+        $ret->{'outbound_originate_ts'} = $outbound_originate_ts;
+        $ret->{'outbound_answer_ts'} = $outbound_answer_ts;
+        $ret->{'outbound_duration'} = $outbound_duration;
     }
 
-    $t->trace->analyze_call();
+    if( $analyze_inbound )
+    {
+        if( $inbound_callid eq '' )
+        {
+            die('Cannot determine inbound call ID');
+        }
+
+        $t->trace->call_id($inbound_callid);
+        my ($props, $errors) = $t->trace->analyze_call();
+
+        $ret->{'inbound_callid'} = $inbound_callid;
+        $ret->{'inbound_dtmf'} = $inbound_dtmf;
+        $ret->{'inbound_call_props'} = $props;
+        $ret->{'inbound_call_errors'} = $errors;
+        $ret->{'inbound_invite_ts'} = $inbound_invite_ts;
+        $ret->{'inbound_answer_ts'} = $inbound_answer_ts;
+        $ret->{'inbound_duration'} = $inbound_duration;
+    }
 
     return $ret;
 }
